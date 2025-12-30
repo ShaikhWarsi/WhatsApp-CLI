@@ -1,0 +1,16 @@
+cat <<EOF > .gitignore
+# Ignore Database (Session Keys) - CRITICAL
+*.db
+*.db-shm
+*.db-wal
+examplestore.db
+
+# Ignore Logs and Media
+debug.log
+downloads/
+
+# Ignore Binaries (We upload these to "Releases", not the source code repo)
+*.exe
+whatsapp-linux-*
+whatsapp-mac-*
+EOF
