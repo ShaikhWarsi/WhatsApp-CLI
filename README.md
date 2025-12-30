@@ -6,10 +6,10 @@ A lightweight, interactive Command Line Interface (CLI) for WhatsApp, written in
 
 ## Screenshots
 
-![WhatsApp CLI TUI View 1](ss1.png)
+![WhatsApp CLI TUI View 1](ss1.PNG)
 *Interface*
 
-![WhatsApp CLI TUI View 2](ss2.png)
+![WhatsApp CLI TUI View 2](ss2.PNG)
 *CLI View*
 
 ## Features
