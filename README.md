@@ -4,6 +4,14 @@
 
 A lightweight, interactive Command Line Interface (CLI) for WhatsApp, written in Go. It uses the [whatsmeow](https://github.com/tulir/whatsmeow) library to communicate with WhatsApp servers and [Bubble Tea](https://github.com/charmbracelet/bubbletea) for the Text User Interface (TUI).
 
+## Screenshots
+
+![WhatsApp CLI TUI View 1](ss1.png)
+*Interface*
+
+![WhatsApp CLI TUI View 2](ss2.png)
+*CLI View*
+
 ## Features
 
 - **Terminal-based UI**: Detailed and interactive TUI navigating chats and messages.
