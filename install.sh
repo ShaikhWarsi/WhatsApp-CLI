@@ -18,8 +18,7 @@ case "$OS" in
     *)         echo "Unsupported OS"; exit 1 ;;
 esac
 
-# Download from GitHub (Replace YOUR_USERNAME/YOUR_REPO with actual values)
-URL="https://github.com/supreme-gg-gg/instagram-cli/releases/latest/download/$BINARY"
+URL="https://github.com/parthbhanti22/WhatsApp-CLI/releases/latest/download/$BINARY"
 curl -L -o whatsapp-cli "$URL"
 
 # Make executable and move to bin
