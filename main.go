@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 )
 
 var (
+	db             *sql.DB
 	activeBorder   = lipgloss.Color("205")
 	inactiveBorder = lipgloss.Color("240")
 	styleSidebar   = lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).Padding(0, 1)
@@ -40,6 +42,8 @@ type model struct {
 	conversations map[string][]string
 	contacts      []string
 	names         map[string]string
+	historyLoaded map[string]bool
+	historyEnabled bool
 	cursor        int
 }
 
@@ -49,14 +53,83 @@ type incomingWAMsg struct {
 	Timestamp                time.Time
 }
 
-func initialModel(client *whatsmeow.Client) model {
+func initialModel(client *whatsmeow.Client, historyEnabled bool) model {
 	ti := textinput.New()
 	ti.Placeholder = "Type a message..."
 	ti.Focus()
 	ti.CharLimit = 1000
 	ti.Width = 50
 	os.Mkdir("downloads", 0755)
-	return model{client: client, input: ti, conversations: make(map[string][]string), contacts: []string{}, names: make(map[string]string), cursor: 0}
+	
+	m := model{
+		client:        client,
+		input:         ti,
+		conversations: make(map[string][]string),
+		contacts:      []string{},
+		names:         make(map[string]string),
+		historyLoaded: make(map[string]bool),
+		historyEnabled: historyEnabled,
+		cursor:        0,
+	}
+	m.loadRecentChats()
+	if len(m.contacts) > 0 {
+		m.loadHistory(m.contacts[0])
+	}
+	return m
+}
+
+func (m *model) loadRecentChats() {
+	if !m.historyEnabled { return }
+	rows, err := db.Query("SELECT DISTINCT chat_jid FROM cli_messages ORDER BY timestamp DESC LIMIT 20")
+	if err != nil { return }
+	defer rows.Close()
+	for rows.Next() {
+		var jid string
+		if err := rows.Scan(&jid); err == nil {
+			m.contacts = append(m.contacts, jid)
+			parsed, _ := types.ParseJID(jid)
+			m.names[jid] = resolveName(m.client, parsed)
+		}
+	}
+}
+
+func (m *model) loadHistory(jid string) {
+	if !m.historyEnabled || m.historyLoaded[jid] { return }
+	
+	rows, err := db.Query("SELECT sender, content, is_from_me, timestamp FROM cli_messages WHERE chat_jid = ? ORDER BY timestamp ASC LIMIT 100", jid)
+	if err != nil { return }
+	defer rows.Close()
+
+	var history []string
+	for rows.Next() {
+		var sender, content string
+		var isFromMe bool
+		var ts time.Time
+		if err := rows.Scan(&sender, &content, &isFromMe, &ts); err == nil {
+			timeStr := ts.Format("15:04")
+			colorSender := lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Render(sender)
+			if isFromMe { colorSender = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render("Me") }
+			
+			displayContent := content
+			if strings.Contains(displayContent, "[Saved") || strings.Contains(displayContent, "CALL") {
+				displayContent = styleMedia.Render(displayContent)
+			}
+			formatted := fmt.Sprintf("[%s] %s: %s", timeStr, colorSender, displayContent)
+			history = append(history, formatted)
+		}
+	}
+	
+	// Prepend history to existing (live) messages
+	m.conversations[jid] = append(history, m.conversations[jid]...)
+	m.historyLoaded[jid] = true
+}
+
+func saveMessage(chatJID, sender, content string, isFromMe bool, ts time.Time) {
+	_, err := db.Exec("INSERT INTO cli_messages (chat_jid, sender, content, is_from_me, timestamp) VALUES (?, ?, ?, ?, ?)",
+		chatJID, sender, content, isFromMe, ts)
+	if err != nil {
+		fmt.Printf("Error saving message: %v\n", err)
+	}
 }
 
 func (m model) Init() tea.Cmd { return textinput.Blink }
@@ -107,14 +180,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "esc":
 			m.client.Disconnect()
 			return m, tea.Quit
+		case "ctrl+h":
+			m.historyEnabled = !m.historyEnabled
+			val := "false"
+			if m.historyEnabled { val = "true" }
+			db.Exec("UPDATE cli_settings SET value = ? WHERE key = 'history_enabled'", val)
+			
+			if m.historyEnabled && len(m.contacts) > 0 {
+				m.loadHistory(m.contacts[m.cursor])
+			}
+			return m, nil
 		case "up":
-			if m.cursor > 0 { m.cursor-- }
+			if m.cursor > 0 { 
+				m.cursor--
+				m.loadHistory(m.contacts[m.cursor])
+			}
 		case "down":
-			if m.cursor < len(m.contacts)-1 { m.cursor++ }
+			if m.cursor < len(m.contacts)-1 { 
+				m.cursor++
+				m.loadHistory(m.contacts[m.cursor])
+			}
 		case "enter":
 			if len(m.contacts) > 0 { m.sendMessage() }
 		}
 	case incomingWAMsg:
+		if m.historyEnabled {
+			saveMessage(msg.ChatJID, msg.Sender, msg.Content, msg.IsFromMe, msg.Timestamp)
+		}
 		chatID := msg.ChatJID
 		exists := false
 		for _, c := range m.contacts {
@@ -147,16 +239,26 @@ func (m *model) sendMessage() {
 	targetJIDStr := m.contacts[m.cursor]
 	targetJID, _ := types.ParseJID(targetJIDStr)
 	m.input.Reset()
+	
+	ts := time.Now()
+	if m.historyEnabled {
+		saveMessage(targetJIDStr, "Me", text, true, ts)
+	}
+	
 	go func() {
 		msg := &waE2E.Message{Conversation: proto.String(text)}
 		m.client.SendMessage(context.Background(), targetJID, msg)
 	}()
-	formatted := fmt.Sprintf("[%s] %s: %s", time.Now().Format("15:04"), lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render("Me"), text)
+	formatted := fmt.Sprintf("[%s] %s: %s", ts.Format("15:04"), lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render("Me"), text)
 	m.conversations[targetJIDStr] = append(m.conversations[targetJIDStr], formatted)
 }
 
 func (m model) View() string {
 	var contactList strings.Builder
+	historyStatus := "OFF"
+	if m.historyEnabled { historyStatus = "ON" }
+	contactList.WriteString(fmt.Sprintf("History: %s (ctrl+h)\n", historyStatus))
+	contactList.WriteString("----------------------\n")
 	contactList.WriteString("Active Chats:\n\n")
 	for i, jid := range m.contacts {
 		name := m.names[jid]
@@ -211,16 +313,48 @@ func main() {
 	dbLog := waLog.Stdout("Database", "ERROR", true)
 	container, err := sqlstore.New(context.Background(), "sqlite", "file:whatsapp_store.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)", dbLog)
 	if err != nil { panic(err) }
+	
+	// Open a separate handle for our CLI messages to avoid type issues with whatsmeow's container
+	db, err = sql.Open("sqlite", "file:whatsapp_store.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	if err != nil { panic(err) }
+	
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS cli_messages (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		chat_jid TEXT,
+		sender TEXT,
+		content TEXT,
+		is_from_me BOOLEAN,
+		timestamp DATETIME
+	)`)
+	if err != nil { panic(err) }
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS cli_settings (
+		key TEXT PRIMARY KEY,
+		value TEXT
+	)`)
+	if err != nil { panic(err) }
+
+	historyEnabled := true
+	var val string
+	err = db.QueryRow("SELECT value FROM cli_settings WHERE key = 'history_enabled'").Scan(&val)
+	if err == nil {
+		historyEnabled = val == "true"
+	} else {
+		// Set default
+		db.Exec("INSERT INTO cli_settings (key, value) VALUES ('history_enabled', 'true')")
+	}
+
 	deviceStore, err := container.GetFirstDevice(context.Background())
 	if err != nil { panic(err) }
 	client := whatsmeow.NewClient(deviceStore, nil)
-	p := tea.NewProgram(initialModel(client), tea.WithAltScreen())
+	p := tea.NewProgram(initialModel(client, historyEnabled), tea.WithAltScreen())
 
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.CallOffer:
 			caller := v.CallCreator.User + "@s.whatsapp.net"
-			p.Send(incomingWAMsg{ChatJID: caller, Sender: "SYSTEM", Content: "???? INCOMING CALL!", IsFromMe: false, Timestamp: v.Timestamp})
+			content := "???? INCOMING CALL!"
+			p.Send(incomingWAMsg{ChatJID: caller, Sender: "SYSTEM", Content: content, IsFromMe: false, Timestamp: v.Timestamp})
 		case *events.Message:
 			chatJID := v.Info.Chat
 			senderJID := v.Info.Sender
