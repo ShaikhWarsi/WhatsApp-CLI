@@ -31,7 +31,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-Or download and run directly (assuming the repo is public):
+Or download and run directly:
 
 ```bash
 curl -sL https://raw.githubusercontent.com/parthbhanti22/WhatsApp-CLI/main/install.sh | bash
